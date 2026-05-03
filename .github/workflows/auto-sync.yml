@@ -1,21 +1,93 @@
-name: Sync All Branches
+name: Sync MoonTVPlus Upstream
+
 on:
   schedule:
-    - cron: '0 */4 * * *'  # 每4小时同步
-  push:
-    branches: ['*']         # 任意分支推送时触发
-  workflow_dispatch:        # 支持手动触发
+    - cron: '0 */6 * * *'  # 每6小时同步
+  workflow_dispatch:       # 手动触发
+
+# 👇 关键：强制使用 Node.js 24 运行器（解决弃用警告）
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
 
 jobs:
-  mirror:
+  sync:
     runs-on: ubuntu-latest
+    if: github.repository != 'mtvpls/MoonTVPlus'
+    
     steps:
-      - uses: actions/checkout@v4
+      - name: Checkout repository
+        uses: actions/checkout@v4  # ✅ 官方已支持 Node24，保持 v4 即可
         with:
-          fetch-depth: 0    # 拉取完整历史
-      - name: Push to Mirror
+          fetch-depth: 0
+          token: ${{ secrets.GITHUB_TOKEN }}
+          persist-credentials: true  # 保留凭证用于后续 push
+      
+      - name: Configure Git
         run: |
-          git remote add target https://username:${{ secrets.TARGET_PAT }}@目标平台域名/user/repo.git
-          git push target --mirror --force-with-lease
-        env:
-          GIT_TERMINAL_PROMPT: 0
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git remote add upstream https://github.com/cmliu/edgetunnel.git
+      
+      - name: Fetch upstream
+        run: |
+          git fetch upstream
+          echo "✅ Upstream fetched successfully"
+      
+      - name: Check if update needed
+        id: check_update
+        run: |
+          LOCAL=$(git rev-parse main)
+          UPSTREAM=$(git rev-parse upstream/main)
+          echo "local_commit=$LOCAL" >> $GITHUB_OUTPUT
+          echo "upstream_commit=$UPSTREAM" >> $GITHUB_OUTPUT
+          
+          if [ "$LOCAL" = "$UPSTREAM" ]; then
+            echo "🎉 Already up to date!"
+            echo "needs_update=false" >> $GITHUB_OUTPUT
+          else
+            echo "🔄 Update available: $LOCAL → $UPSTREAM"
+            echo "needs_update=true" >> $GITHUB_OUTPUT
+          fi
+      
+      - name: Sync with upstream (rebase strategy)
+        if: steps.check_update.outputs.needs_update == 'true'
+        run: |
+          git checkout main
+          
+          # 尝试 rebase，如果冲突则记录错误并退出（避免破坏你的分支）
+          if ! git rebase upstream/main; then
+            echo "❌ Rebase failed - possible conflict!"
+            echo "Please resolve manually or switch to merge strategy."
+            git rebase --abort  # 安全回退
+            exit 1
+          fi
+          
+          echo "✅ Rebase completed"
+      
+      - name: Push to your fork
+        if: steps.check_update.outputs.needs_update == 'true' && success()
+        run: |
+          # --force-with-lease 比 --force 更安全，避免覆盖他人推送
+          if ! git push origin main --force-with-lease; then
+            echo "❌ Push failed - check branch protection or permissions"
+            exit 1
+          fi
+          echo "✅ Pushed successfully to your fork"
+      
+      - name: Sync tags (optional)
+        if: success()
+        run: |
+          git fetch upstream --tags
+          git push origin --tags --force-with-lease 2>/dev/null || echo "⚠️ Tag sync skipped"
+      
+      - name: Notify result
+        if: always()  # 无论成功失败都执行
+        run: |
+          STATUS="${{ job.status }}"
+          if [ "$STATUS" = "success" ]; then
+            echo "🎉 Sync completed successfully!"
+          else
+            echo "❌ Sync failed with exit code 1"
+            echo "👉 Check the 'Sync with upstream' step logs for conflict details"
+            echo "💡 Tip: Run 'git rebase --abort' locally if stuck"
+          fi
