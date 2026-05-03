@@ -1,33 +1,21 @@
-name: 自动同步 main → app
-
+name: Sync All Branches
 on:
+  schedule:
+    - cron: '0 */4 * * *'  # 每4小时同步
   push:
-    branches: [ main ]           # main 有更新时触发
-  workflow_dispatch:             # 支持手动触发
+    branches: ['*']         # 任意分支推送时触发
+  workflow_dispatch:        # 支持手动触发
 
 jobs:
-  sync-to-app:
+  mirror:
     runs-on: ubuntu-latest
-    permissions:
-      contents: write
-
     steps:
       - uses: actions/checkout@v4
         with:
-          fetch-depth: 0
-
-      - name: 配置 Git
+          fetch-depth: 0    # 拉取完整历史
+      - name: Push to Mirror
         run: |
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-
-      - name: 同步 main 到 app
-        run: |
-          git fetch origin
-          git checkout app
-          git pull origin app --no-rebase
-          
-          # 合并 main（可改成 rebase）
-          git merge origin/main --no-ff -m "chore: auto sync main into app"
-          
-          git push origin app
+          git remote add target https://username:${{ secrets.TARGET_PAT }}@目标平台域名/user/repo.git
+          git push target --mirror --force-with-lease
+        env:
+          GIT_TERMINAL_PROMPT: 0
